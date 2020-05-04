@@ -8,3 +8,4 @@ package_name | command for installation
 numpy | conda install numpy
 opencv | conda install opencv
 scipy | conda install scipy
+matplotlib | conda install matplotlib
