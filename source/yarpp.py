@@ -10,7 +10,7 @@ from collections import deque
 import numpy as np
 from numpy.random import multivariate_normal
 import cv2
-from scipy.spatial.distance import cdist
+from scipy.spatial.distance import cdist, euclidean
 import matplotlib.pyplot as plt
 
 
@@ -43,7 +43,8 @@ class YARPP:
         """
         img = cv2.imread(img_path, 2)
         _, bi_img = cv2.threshold(img, threshold[0], threshold[1], cv2.THRESH_BINARY)
-        return bi_img
+        # return bi_img
+        return np.array([[1 if value == 0 else 0 for value in row] for row in bi_img])
 
     @staticmethod
     def smart_initialization(data, K):
@@ -79,7 +80,7 @@ class YARPP:
         :return:                        list of centroids of the image object.
         """
         self.objects_coord_list = np.array(
-            [[x, y] for x in range(img_ary.shape[0]) for y in range(img_ary.shape[1]) if img_ary[x][y] == 0])
+            [[x, y] for x in range(self.shape[0]) for y in range(self.shape[1]) if img_ary[x][y] == 0])
         centroids = self.smart_initialization(self.objects_coord_list, self.num_objects)
         history_queue = deque(maxlen=early_stopping_iter)
 
@@ -103,36 +104,76 @@ class YARPP:
                     return False
         return True
 
-    def sampling(self, size=300):
+    def sampling(self, radius_type=None, size=300):
+        multi_norm_sample = []
         if self.num_objects == 1:
-            mean_vec = [self.centroids[0][0], self.centroids[0][1], 120]
-            var_vec = [(self.shape[0] / 6) ** 2, (self.shape[1] / 6) ** 2, 60**2]
+            mean_vec = [self.centroids[0][0], self.centroids[0][1]]
+            var_vec = [(self.shape[0] / 6) ** 2, (self.shape[1] / 6) ** 2]
             cov_mat = np.diag(var_vec)
             # multi_norm_sample = multivariate_normal(mean_vec, cov_mat, size=size)
             # multi_norm_filtered = np.array(
             #     [list(x) for x in multi_norm_sample if 0 <= x[0] < self.shape[0] and 0 <= x[1] < self.shape[1]])
             # return multi_norm_filtered
-            multi_norm_sample = []
+
             success_count = 0
             total_iteration = 0
             while success_count < size:
                 curr_sample = multivariate_normal(mean_vec, cov_mat, size=1)[0]
-                if 0 < curr_sample[0] < self.shape[0] and 0 < curr_sample[1] < self.shape[1] and curr_sample[2] > 0:
+                curr_radius = self.radius(centroid=self.centroids[0],
+                                          point=(curr_sample[0], curr_sample[1]),
+                                          radius_range=(0, 50),
+                                          distance_range=(0, euclidean(self.centroids[0], (0, 0))))
+                if self.sampling_decision(np.append(curr_sample, curr_radius), multi_norm_sample):
+                    curr_sample = np.append(curr_sample, curr_radius)
                     multi_norm_sample.append(curr_sample)
                     success_count += 1
                 total_iteration += 1
 
-            return np.array(multi_norm_sample)
+        return np.array(multi_norm_sample)
 
-    def helper_plot(self, data=None, sample_size=300):
+    def sampling_decision(self, point, points_list):
+        decision = True
+        # Check if the point is inside the canvas.
+        if 0 < point[0] < self.shape[0] and 0 < point[1] < self.shape[1] and self.binary_img[int(point[0]), int(point[1])] != 1:
+            # 1. euclidean(point[0:2], history_point[0:2]) is the distance between two points.
+            # 2. (point[2] + history_point[2]) is the sum of the radius of two circle.
+            # 3. if (1) - (2) is less than 0, it means that the two circles intercept.
+            # We expect that the sampled points with the relative radius does not intercept with other points.
+            if sum([(euclidean(point[0:2], history_point[0:2]) - (point[2] + history_point[2])) < 0 for history_point in points_list]) > 0:
+                decision = False
+        else:
+            decision = False
+        return decision
+
+    def helper_plot(self, type, data=None, sample_size=300, annotate=False):
         fig, ax = plt.subplots()
-        ax.matshow(Z=self.binary_img)
-        sampled_scatters = self.sampling(sample_size)
-        ax.scatter(x=sampled_scatters[:, 1], y=sampled_scatters[:, 0], c='r', s=sampled_scatters[:, 2])
+        ax.matshow(Z=self.binary_img, cmap=plt.cm.binary, vmin=0, vmax=1)
+        if data is None:
+            data = self.sampling(size=sample_size)
+        if type == "scatter":
+            ax.scatter(x=data[:, 1], y=data[:, 0], c='r', s=data[:, 2])
+        elif type == "circle":
+            for point in data:
+                curr_circle = plt.Circle(xy=(point[1], point[0]), radius=point[2], color='r', fill=False)
+                ax.add_artist(curr_circle)
 
-        for i, txt in enumerate(sampled_scatters[:, 2]):
-            ax.annotate(round(txt, 2), (sampled_scatters[i, 1], sampled_scatters[i, 0]))
-
+        if annotate:
+            for i, txt in enumerate(data[:, 2]):
+                ax.annotate(round(txt, 2), (data[i, 1], data[i, 0]))
+        ax.add_artist(plt.Circle(xy=(self.centroids[0][1], self.centroids[0][0]), radius=10, color='y', fill=True))
         plt.show()
+
+    # TODO: Features: let user provide their own radius function.
+    def radius(self, centroid, point, radius_range, distance_range, radius_decay_type="linear", noisy=True):
+        # TODO: Improve the equation for calculating distance range.
+        radius = None
+        curr_distance = euclidean(centroid, point)
+        if radius_decay_type == "linear":
+            # radius = -1*((radius_range[0]-radius_range[1])/(distance_range[1]-distance_range[0]))*curr_distance+radius_range[1]
+            radius = (distance_range[1] - curr_distance) / 20
+        else:
+            AssertionError("Invalid radius_decay_type value. ")
+
+        return radius
 
     # TODO: Metrapolis-Hasting sampling method.
