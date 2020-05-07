@@ -12,6 +12,9 @@ from numpy.random import multivariate_normal
 import cv2
 from scipy.spatial.distance import cdist, euclidean
 import matplotlib.pyplot as plt
+from shapely.geometry import Polygon
+from shapely.geometry.point import Point
+from tqdm import tqdm
 
 
 class YARPP:
@@ -24,24 +27,25 @@ class YARPP:
         Constructor for YARPP class.
         """
         self.input_img_path = input_img_path
+        self.input_img = cv2.imread(input_img_path, cv2.IMREAD_GRAYSCALE)
+        self.shape = self.input_img.shape
         # TODO: error exceptions for valid input path.
         self.threshold = threshold
         self.num_objects = 1
         self.objects_coord_list = None
         self.max_kmpp_iter = 300
-        self.binary_img = self.img_binary_conversion(input_img_path, threshold)
-        self.shape = self.binary_img.shape
+        self.edge_coord, self.edge_poly = self.__edge_extraction(self.input_img)
+        self.binary_img = self.img_binary_conversion(self.input_img, threshold)
         self.centroids = self.k_means_pp(self.binary_img, self.max_kmpp_iter)
 
     @staticmethod
-    def img_binary_conversion(img_path, threshold):
+    def img_binary_conversion(img, threshold):
         """
         Function for converting image to binary image format.
         :param img_path:        Path to the image.
         :param threshold:       Tuple value represents (min_threshold, max_threshold)
         :return:                Converted binary image format.
         """
-        img = cv2.imread(img_path, 2)
         _, bi_img = cv2.threshold(img, threshold[0], threshold[1], cv2.THRESH_BINARY)
         # return bi_img
         return np.array([[1 if value == 0 else 0 for value in row] for row in bi_img])
@@ -70,6 +74,12 @@ class YARPP:
                     break
             centroids.append(data[i])
         return np.array(centroids)
+
+    def __edge_extraction(self, orig_img):
+        # Apply the laplacian filter to the input binary image.
+        laplacian = cv2.Laplacian(orig_img, cv2.CV_64F)
+        edge_coord = [[x, y] for y in range(self.shape[0]) for x in range(self.shape[1]) if laplacian[y, x] != 0]
+        return edge_coord, Polygon(edge_coord)
 
     def k_means_pp(self, img_ary, max_iter=300, early_stopping_iter=10):
         """
@@ -106,6 +116,9 @@ class YARPP:
 
     def sampling(self, radius_type=None, size=300):
         multi_norm_sample = []
+        pbar = tqdm(total=size)
+        print("Sampling in progress, user specified number of objects = {}".format(self.num_objects))
+
         if self.num_objects == 1:
             mean_vec = [self.centroids[0][0], self.centroids[0][1]]
             var_vec = [(self.shape[0] / 6) ** 2, (self.shape[1] / 6) ** 2]
@@ -127,8 +140,9 @@ class YARPP:
                     curr_sample = np.append(curr_sample, curr_radius)
                     multi_norm_sample.append(curr_sample)
                     success_count += 1
+                    pbar.update(1)
                 total_iteration += 1
-
+        pbar.close()
         return np.array(multi_norm_sample)
 
     def sampling_decision(self, point, points_list):
@@ -140,12 +154,14 @@ class YARPP:
             # 3. if (1) - (2) is less than 0, it means that the two circles intercept.
             # We expect that the sampled points with the relative radius does not intercept with other points.
             if sum([(euclidean(point[0:2], history_point[0:2]) - (point[2] + history_point[2])) < 0 for history_point in points_list]) > 0:
-                decision = False
+                return False
+            if Point(point[1], point[0]).buffer(point[2]).intersects(self.edge_poly):
+                return False
         else:
-            decision = False
+            return False
         return decision
 
-    def helper_plot(self, type, data=None, sample_size=300, annotate=False):
+    def helper_plot(self, type, data=None, sample_size=300, annotate=False, random_color=True, fill=True):
         fig, ax = plt.subplots()
         ax.matshow(Z=self.binary_img, cmap=plt.cm.binary, vmin=0, vmax=1)
         if data is None:
@@ -153,14 +169,19 @@ class YARPP:
         if type == "scatter":
             ax.scatter(x=data[:, 1], y=data[:, 0], c='r', s=data[:, 2])
         elif type == "circle":
-            for point in data:
-                curr_circle = plt.Circle(xy=(point[1], point[0]), radius=point[2], color='r', fill=False)
-                ax.add_artist(curr_circle)
+            if random_color:
+                for point in data:
+                    curr_circle = plt.Circle(xy=(point[1], point[0]), radius=point[2], color=np.random.rand(3, ), fill=fill)
+                    ax.add_artist(curr_circle)
+            else:
+                for point in data:
+                    curr_circle = plt.Circle(xy=(point[1], point[0]), radius=point[2], color='r', fill=False)
+                    ax.add_artist(curr_circle)
 
         if annotate:
             for i, txt in enumerate(data[:, 2]):
                 ax.annotate(round(txt, 2), (data[i, 1], data[i, 0]))
-        ax.add_artist(plt.Circle(xy=(self.centroids[0][1], self.centroids[0][0]), radius=10, color='y', fill=True))
+        ax.add_artist(plt.Circle(xy=(self.centroids[0][1], self.centroids[0][0]), radius=10, color='y', fill=fill))
         plt.show()
 
     # TODO: Features: let user provide their own radius function.
